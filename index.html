@@ -119,6 +119,58 @@
   .sideCard{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
     border:1px solid var(--border);border-radius:16px;padding:14px}
   .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+
+  /* Floating Quick Add button */
+  .fab{
+    position:fixed; right:14px; bottom:14px; z-index:50;
+    border-radius:999px; padding:12px 14px;
+    background:rgba(74,163,255,.22); border:1px solid rgba(74,163,255,.45);
+    color:var(--text); font-weight:950; box-shadow:0 10px 30px rgba(0,0,0,.45);
+  }
+
+  /* Quick Add modal */
+  .overlay{
+    position:fixed; inset:0; z-index:60;
+    background:rgba(0,0,0,.55); backdrop-filter:blur(6px);
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .overlay.show{display:flex}
+  .sheet{
+    width:min(720px, 100%);
+    background:rgba(20,26,36,.98);
+    border:1px solid var(--border);
+    border-radius:18px 18px 0 0;
+    padding:12px;
+  }
+  .sheetTop{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+  }
+  .results{
+    margin-top:10px; max-height:52vh; overflow:auto;
+    border-top:1px solid var(--border); padding-top:10px;
+  }
+  .result{
+    border:1px solid var(--border); background:rgba(0,0,0,.18);
+    border-radius:12px; padding:10px; margin-bottom:8px;
+    display:flex; justify-content:space-between; gap:10px; align-items:flex-start;
+  }
+  .result b{display:block}
+  .mini{font-size:12px; color:var(--muted); line-height:1.35}
+  .pillTiny{
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--border); background:rgba(0,0,0,.20);
+    padding:6px 9px; border-radius:999px; color:var(--muted); font-size:12px; font-weight:900;
+  }
+
+  /* Toast */
+  .toast{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:80px; z-index:70;
+    background:rgba(53,208,127,.18); border:1px solid rgba(53,208,127,.45);
+    padding:10px 12px; border-radius:14px; font-weight:950;
+    display:none; max-width:min(92vw, 780px);
+  }
+  .toast.show{display:block}
 </style>
 </head>
 
@@ -130,7 +182,7 @@
       <div class="topRow">
         <div>
           <h1>Kitchen Delivery Verification</h1>
-          <div class="sub">iPhone-friendly header • PDF report with readable spacing</div>
+          <div class="sub">Quick Add (type → jump → +1) • iPhone-friendly header • PDF export</div>
           <div class="pills" id="pills"></div>
         </div>
         <div class="btnRow">
@@ -199,10 +251,36 @@
     </div>
 
     <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px" class="smallText">
-      Tip: Tap <b>Minimise</b> after you’ve entered job details.
+      Tip: Use <b>Quick Add</b> (bottom-right) — type “900x618” or “plinth” → tap result → it adds +1 and jumps to it.
     </div>
   </div>
 </main>
+
+<!-- Floating Quick Add -->
+<button class="fab" id="btnQuickAdd">Quick Add</button>
+
+<!-- Quick Add modal -->
+<div class="overlay" id="qaOverlay" role="dialog" aria-modal="true">
+  <div class="sheet">
+    <div class="sheetTop">
+      <div style="font-weight:950">Quick Add</div>
+      <div class="btnRow">
+        <button class="small" id="qaClose">Close</button>
+      </div>
+    </div>
+
+    <label style="margin-top:10px">Type what you see on the label</label>
+    <input id="qaInput" type="text" placeholder="e.g., 900x618, plinth, filler, belfast, dishwasher…" />
+
+    <div class="smallText" style="margin-top:8px">
+      Tap a match to: open category → scroll to item → add +1.
+    </div>
+
+    <div class="results" id="qaResults"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script>
 /* =========================
@@ -283,9 +361,10 @@ const CATEGORIES = [
 /* =========================
    STATE / STORAGE
    ========================= */
-const STORAGE_KEY = "kitchen_delivery_austin_v6";
+const STORAGE_KEY = "kitchen_delivery_austin_v7";
 const $ = (id) => document.getElementById(id);
-let headerLock = false; // NEW: lock header open while typing
+let headerLock = false;
+let pendingScrollTo = null;
 
 function buildDefaultState(){
   const items = {};
@@ -318,43 +397,34 @@ function isVerified(it){ return (state.items[it.id].received||0) >= it.qty; }
 function isAttention(it){ const st=state.items[it.id]; return !isVerified(it) || st.issue; }
 
 /* =========================
-   HEADER COLLAPSE (fixed)
+   HEADER COLLAPSE
    ========================= */
 const hdr = document.getElementById("hdr");
 const formArea = document.getElementById("formArea");
-
 function applyHeaderState(){
   const collapsed = !!state.ui.headerCollapsed;
   hdr.classList.toggle("compact", collapsed);
   $("btnCollapse").textContent = collapsed ? "Expand" : "Minimise";
 }
-
 $("btnCollapse").addEventListener("click", () => {
   state.ui.headerCollapsed = !state.ui.headerCollapsed;
   saveState();
   applyHeaderState();
 });
-
-// NEW: lock header open while user is editing top fields
 formArea.addEventListener("focusin", () => {
   headerLock = true;
   state.ui.headerCollapsed = false;
   saveState();
   applyHeaderState();
 });
-formArea.addEventListener("focusout", () => {
-  // small delay so iOS keyboard closing doesn't instantly collapse mid-transition
-  setTimeout(() => { headerLock = false; }, 200);
-});
+formArea.addEventListener("focusout", () => { setTimeout(() => { headerLock = false; }, 200); });
 
-// Auto-collapse on scroll ONLY when not locked
 let lastAuto = 0;
 window.addEventListener("scroll", () => {
   if (headerLock) return;
   const y = window.scrollY || 0;
   const now = Date.now();
   if (now - lastAuto < 250) return;
-
   if (y > 80 && !state.ui.headerCollapsed){
     state.ui.headerCollapsed = true; saveState(); applyHeaderState(); lastAuto = now;
   }
@@ -390,861 +460,145 @@ function fileToCompressedDataURL(file, maxDim=1200, quality=0.75){
 }
 
 /* =========================
-   RENDER
+   TOAST
    ========================= */
-function render(){
-  $("jobAddress").value = state.meta.jobAddress;
-  $("jobDate").value = state.meta.jobDate;
-  $("jobTeam").value = state.meta.jobTeam;
-  $("search").value = state.ui.search;
-  $("missingOnly").checked = !!state.ui.missingOnly;
-
-  const q = (state.ui.search||"").trim().toLowerCase();
-  const missingOnly = !!state.ui.missingOnly;
-
-  const root = $("sections");
-  root.innerHTML = "";
-
-  for (const cat of CATEGORIES){
-    let visibleItems = cat.items.filter(it =>
-      !q || it.name.toLowerCase().includes(q) || cat.title.toLowerCase().includes(q)
-    );
-    if (missingOnly) visibleItems = visibleItems.filter(it => isAttention(it));
-    if ((q || missingOnly) && visibleItems.length === 0) continue;
-
-    const verifiedCount = visibleItems.filter(isVerified).length;
-    const totalCount = visibleItems.length;
-
-    const det = document.createElement("details");
-    det.open = !!state.ui.openSections[cat.id];
-    det.addEventListener("toggle", () => { state.ui.openSections[cat.id] = det.open; saveState(); });
-
-    const sum = document.createElement("summary");
-    sum.innerHTML = `
-      <div>${cat.title}</div>
-      <div class="secMeta">
-        <span>${verifiedCount}/${totalCount} verified</span>
-        <button class="small" type="button" data-markcat="${cat.id}">Mark category verified</button>
-      </div>
-    `;
-    det.appendChild(sum);
-
-    sum.querySelector(`[data-markcat="${cat.id}"]`).addEventListener("click", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const yes = confirm(`Mark ALL items in "${cat.title}" as verified (received = expected)?`);
-      if (!yes) return;
-      for (const it of cat.items){
-        state.items[it.id].received = it.qty;
-        state.items[it.id].issue = false;
-      }
-      saveState(); render();
-    });
-
-    const itemsWrap = document.createElement("div");
-    itemsWrap.className = "items";
-
-    for (const it of visibleItems){
-      const st = state.items[it.id];
-      const received = st.received || 0;
-      const verified = received >= it.qty;
-
-      const itemEl = document.createElement("div");
-      itemEl.className = "item";
-      itemEl.innerHTML = `
-        <div class="itemTop">
-          <div>
-            <div class="name">${it.name}</div>
-            <div class="smallText">Expected: <span class="mono">${it.qty}</span></div>
-            <div class="status ${verified ? "ok" : "bad"}">${verified ? "VERIFIED" : "MISSING"}</div>
-            ${st.issue ? `<div class="status bad">ISSUE: ${st.issueType.toUpperCase()}</div>` : ``}
-          </div>
-          <div class="counter">
-            <button type="button" data-dec="${it.id}">−</button>
-            <span class="mono">${received}</span>
-            <button type="button" data-inc="${it.id}">+</button>
-          </div>
-        </div>
-
-        <div class="btnRow">
-          <button class="small" type="button" data-toggle="${it.id}">Details</button>
-          <button class="small ${st.issue ? "danger":""}" type="button" data-issue="${it.id}">
-            ${st.issue ? "Clear issue flag" : "Flag as issue"}
-          </button>
-        </div>
-
-        <div class="panel ${st.issue || st.note || st.photos.length ? "show" : ""}" id="panel_${it.id}">
-          <label>Issue type</label>
-          <select data-issuetype="${it.id}">
-            <option value="missing" ${st.issueType==="missing"?"selected":""}>Missing</option>
-            <option value="damaged" ${st.issueType==="damaged"?"selected":""}>Damaged</option>
-            <option value="wrong" ${st.issueType==="wrong"?"selected":""}>Wrong item</option>
-          </select>
-
-          <label>Notes (optional)</label>
-          <textarea placeholder="e.g., damaged corner / wrong colour / left at depot" data-note="${it.id}">${st.note || ""}</textarea>
-
-          <label>Photos (optional)</label>
-          <input type="file" accept="image/*" capture="environment" data-photo="${it.id}">
-          <div class="thumbs" id="thumbs_${it.id}"></div>
-          <div class="hint">Tap a photo to remove it.</div>
-
-          <div class="btnRow">
-            <button class="small" type="button" data-clearnote="${it.id}">Clear note</button>
-            <button class="small danger" type="button" data-clearphotos="${it.id}">Clear photos</button>
-          </div>
-        </div>
-      `;
-
-      itemEl.querySelector(`[data-dec="${it.id}"]`).addEventListener("click", () => {
-        state.items[it.id].received = clamp((state.items[it.id].received || 0) - 1, 0, it.qty);
-        saveState(); render();
-      });
-      itemEl.querySelector(`[data-inc="${it.id}"]`).addEventListener("click", () => {
-        state.items[it.id].received = clamp((state.items[it.id].received || 0) + 1, 0, it.qty);
-        if (isVerified(it) && state.items[it.id].issue && state.items[it.id].issueType === "missing"){
-          state.items[it.id].issue = false;
-        }
-        saveState(); render();
-      });
-
-      itemEl.querySelector(`[data-toggle="${it.id}"]`).addEventListener("click", () => {
-        itemEl.querySelector(`#panel_${it.id}`).classList.toggle("show");
-      });
-
-      itemEl.querySelector(`[data-issue="${it.id}"]`).addEventListener("click", () => {
-        state.items[it.id].issue = !state.items[it.id].issue;
-        if (state.items[it.id].issue && state.items[it.id].issueType === "missing"){
-          state.items[it.id].received = clamp(state.items[it.id].received || 0, 0, it.qty - 1);
-        }
-        saveState(); render();
-      });
-
-      itemEl.querySelector(`select[data-issuetype="${it.id}"]`).addEventListener("change", (e) => {
-        state.items[it.id].issueType = e.target.value;
-        saveState(); updateSidePanels(); updateTopSummary();
-      });
-
-      itemEl.querySelector(`textarea[data-note="${it.id}"]`).addEventListener("input", (e) => {
-        state.items[it.id].note = e.target.value;
-        saveState(); updateSidePanels();
-      });
-
-      const thumbsEl = itemEl.querySelector(`#thumbs_${it.id}`);
-      const renderThumbs = () => {
-        thumbsEl.innerHTML = "";
-        (state.items[it.id].photos || []).forEach((p, idx) => {
-          const img = document.createElement("img");
-          img.className = "thumb";
-          img.src = p.dataUrl;
-          img.addEventListener("click", () => {
-            if (!confirm("Remove this photo?")) return;
-            state.items[it.id].photos.splice(idx, 1);
-            saveState(); render();
-          });
-          thumbsEl.appendChild(img);
-        });
-      };
-      renderThumbs();
-
-      itemEl.querySelector(`input[data-photo="${it.id}"]`).addEventListener("change", async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const dataUrl = await fileToCompressedDataURL(file, 1200, 0.75);
-        state.items[it.id].photos.push({ dataUrl, ts: new Date().toISOString() });
-        state.items[it.id].issue = true;
-        e.target.value = "";
-        saveState(); render();
-      });
-
-      itemEl.querySelector(`[data-clearnote="${it.id}"]`).addEventListener("click", () => {
-        state.items[it.id].note = "";
-        saveState(); render();
-      });
-      itemEl.querySelector(`[data-clearphotos="${it.id}"]`).addEventListener("click", () => {
-        if (!confirm("Clear all photos for this item?")) return;
-        state.items[it.id].photos = [];
-        saveState(); render();
-      });
-
-      itemsWrap.appendChild(itemEl);
-    }
-
-    det.appendChild(itemsWrap);
-    root.appendChild(det);
-  }
-
-  updateTopSummary();
-  updateSidePanels();
-  saveState();
-}
-
-function updateTopSummary(){
-  const flat = allItemsFlat();
-  const total = flat.length;
-  const verified = flat.filter(isVerified).length;
-  const issues = flat.filter(it => state.items[it.id].issue).length;
-  const missing = total - verified;
-
-  $("progressText").textContent = `${verified} / ${total} verified`;
-  $("bar").style.width = (total ? Math.round((verified/total)*100) : 0) + "%";
-
-  $("pills").innerHTML = `
-    <span class="pill"><span class="dot ok"></span>${verified}/${total} verified</span>
-    <span class="pill"><span class="dot ${missing ? "bad":"ok"}"></span>${missing} missing</span>
-    <span class="pill"><span class="dot ${issues ? "bad":"ok"}"></span>${issues} issues</span>
-  `;
-}
-
-function updateSidePanels(){
-  const flat = allItemsFlat();
-  const attention = flat.filter(isAttention);
-
-  if (attention.length === 0){
-    $("readyBadge").innerHTML = `<span class="dot ok"></span>Ready`;
-    $("readyHelp").textContent = "All items verified and no issues flagged.";
-    $("issues").textContent = "No issues yet.";
-    return;
-  }
-
-  const missing = flat.filter(it => !isVerified(it)).length;
-  const issues = flat.filter(it => state.items[it.id].issue).length;
-
-  $("readyBadge").innerHTML = `<span class="dot bad"></span>Not ready`;
-  $("readyHelp").textContent = `${missing} missing line item(s) • ${issues} issue(s) flagged`;
-
-  const lines = [];
-  for (const it of attention.slice(0, 14)){
-    const st = state.items[it.id];
-    const got = st.received || 0;
-    const note = (st.note || "").trim();
-    const issue = st.issue ? ` [ISSUE:${st.issueType.toUpperCase()}]` : "";
-    const photos = st.photos?.length ? ` (photos:${st.photos.length})` : "";
-    lines.push(`• ${it.name} (${got}/${it.qty})${issue}${photos}${note ? " — " + note : ""}`);
-  }
-  if (attention.length > 14) lines.push(`…and ${attention.length - 14} more`);
-  $("issues").innerHTML = `<div style="white-space:pre-wrap;line-height:1.55">${lines.join("\n")}</div>`;
+let toastT = null;
+function showToast(msg){
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastT);
+  toastT = setTimeout(()=> el.classList.remove("show"), 1800);
 }
 
 /* =========================
-   META EVENTS
+   QUICK ADD (NEW)
    ========================= */
-$("jobAddress").addEventListener("input", (e) => { state.meta.jobAddress = e.target.value; saveState(); });
-$("jobDate").addEventListener("change", (e) => { state.meta.jobDate = e.target.value; saveState(); });
-$("jobTeam").addEventListener("input", (e) => { state.meta.jobTeam = e.target.value; saveState(); });
-$("search").addEventListener("input", (e) => { state.ui.search = e.target.value; saveState(); render(); });
-$("missingOnly").addEventListener("change", (e) => { state.ui.missingOnly = e.target.checked; saveState(); render(); });
+const qaOverlay = $("qaOverlay");
+const qaInput = $("qaInput");
+const qaResults = $("qaResults");
 
-/* =========================
-   TXT EXPORT (fallback)
-   ========================= */
-function buildTxtReport(){
-  const flat = allItemsFlat();
-  const total = flat.length;
-  const verified = flat.filter(isVerified).length;
-  const missing = total - verified;
-  const issues = flat.filter(it => state.items[it.id].issue).length;
+function normalize(s){
+  return (s || "")
+    .toString()
+    .toLowerCase()
+    .replaceAll("×","x")
+    .replace(/[^a-z0-9x]+/g," ")
+    .trim();
+}
+function scoreMatch(queryNorm, item){
+  const nameN = normalize(item.name);
+  const catN  = normalize(item.catTitle);
+  if (!queryNorm) return 0;
 
-  const lines = [];
-  lines.push("KITCHEN DELIVERY VERIFICATION REPORT");
-  lines.push("-----------------------------------");
-  lines.push(`Job/Address: ${state.meta.jobAddress || "-"}`);
-  lines.push(`Date: ${state.meta.jobDate || "-"}`);
-  lines.push(`Team: ${state.meta.jobTeam || "-"}`);
-  lines.push("");
-  lines.push(`Summary: Verified ${verified}/${total} | Missing ${missing} | Issues ${issues}`);
-  lines.push("");
+  // higher score for direct include
+  let score = 0;
+  if (nameN.includes(queryNorm)) score += 100;
+  if (catN.includes(queryNorm)) score += 30;
 
-  for (const cat of CATEGORIES){
-    lines.push(cat.title.toUpperCase());
-    for (const it of cat.items){
-      const st = state.items[it.id];
-      const got = st.received || 0;
-      const ok = got >= it.qty ? "VERIFIED" : "MISSING";
-      const issue = st.issue ? `ISSUE:${st.issueType.toUpperCase()}` : "";
-      const photos = st.photos?.length ? `PHOTOS:${st.photos.length}` : "";
-      const note = (st.note || "").trim();
-      const extra = [issue, photos].filter(Boolean).join(" ");
-      lines.push(`- ${it.name} :: ${got}/${it.qty} :: ${ok}${extra ? " :: " + extra : ""}${note ? " :: NOTE: " + note : ""}`);
-    }
-    lines.push("");
+  // token scoring
+  const qTokens = queryNorm.split(/\s+/).filter(Boolean);
+  for (const t of qTokens){
+    if (nameN.includes(t)) score += 12;
+    if (catN.includes(t)) score += 4;
+    // dimensions are powerful: "900x618"
+    if (t.includes("x") && nameN.includes(t)) score += 40;
   }
-  return lines.join("\n");
+
+  // small bonus for shorter distance (rough)
+  score += Math.max(0, 30 - Math.abs(nameN.length - queryNorm.length) / 4);
+  return score;
 }
 
-$("btnExportTxt").addEventListener("click", () => {
-  const text = buildTxtReport();
-  const blob = new Blob([text], { type:"text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `kitchen-delivery-${state.meta.jobDate || "date"}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  alert("TXT exported.");
+function openQuickAdd(){
+  qaOverlay.classList.add("show");
+  // prevent header auto collapse while using modal
+  headerLock = true;
+  qaInput.value = "";
+  renderQuickAddResults("");
+  setTimeout(() => qaInput.focus(), 50);
+}
+function closeQuickAdd(){
+  qaOverlay.classList.remove("show");
+  headerLock = false;
+}
+
+$("btnQuickAdd").addEventListener("click", openQuickAdd);
+$("qaClose").addEventListener("click", closeQuickAdd);
+qaOverlay.addEventListener("click", (e) => {
+  if (e.target === qaOverlay) closeQuickAdd();
 });
 
-/* =========================
-   PDF EXPORT (fixed spacing)
-   ========================= */
-function splitLines(doc, text, width){
-  return doc.splitTextToSize(text, width);
-}
-function ensureSpace(doc, y, need){
-  const pageH = doc.internal.pageSize.getHeight();
-  if (y + need > pageH - 40){
-    doc.addPage();
-    return 40;
-  }
-  return y;
-}
+qaInput.addEventListener("input", () => {
+  renderQuickAddResults(qaInput.value);
+});
 
-async function generatePdf(){
-  if (!window.jspdf?.jsPDF){
-    alert("PDF library didn’t load. Check internet connection and try again.");
+function renderQuickAddResults(q){
+  const qn = normalize(q);
+  const flat = allItemsFlat().map(it => ({...it, _score: scoreMatch(qn, it)}));
+  const results = flat
+    .filter(r => qn.length === 0 ? false : r._score > 0)
+    .sort((a,b)=> b._score - a._score)
+    .slice(0, 10);
+
+  if (!qn){
+    qaResults.innerHTML = `<div class="smallText">Type a size/code/keyword to see matches.</div>`;
     return;
   }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:"pt", format:"a4" });
-
-  const margin = 40;
-  const pageW = doc.internal.pageSize.getWidth();
-  const maxW = pageW - margin*2;
-  const lh10 = 14;  // NEW: bigger line height for readability
-  const lh12 = 16;
-
-  const flat = allItemsFlat();
-  const total = flat.length;
-  const verified = flat.filter(isVerified).length;
-  const missing = total - verified;
-  const issues = flat.filter(it => state.items[it.id].issue).length;
-
-  let y = margin;
-
-  doc.setFont("helvetica","bold");
-  doc.setFontSize(16);
-  doc.text("Kitchen Delivery Verification Report", margin, y);
-  y += 22;
-
-  doc.setFont("helvetica","normal");
-  doc.setFontSize(10);
-  doc.text(`Job/Address: ${state.meta.jobAddress || "-"}`, margin, y); y += lh10;
-  doc.text(`Date: ${state.meta.jobDate || "-"}`, margin, y); y += lh10;
-  doc.text(`Team: ${state.meta.jobTeam || "-"}`, margin, y); y += 18;
-
-  // Summary
-  doc.setFont("helvetica","bold"); doc.setFontSize(12);
-  doc.text("Summary", margin, y); y += 18;
-  doc.setFont("helvetica","normal"); doc.setFontSize(10);
-  doc.text(`Verified: ${verified}/${total}    Missing: ${missing}    Issues: ${issues}`, margin, y);
-  y += 22;
-
-  // Missing Items
-  const missingItems = flat.filter(it => !isVerified(it));
-  y = ensureSpace(doc, y, 30);
-  doc.setFont("helvetica","bold"); doc.setFontSize(12);
-  doc.text(`Missing Items (${missingItems.length})`, margin, y); y += 18;
-
-  doc.setFont("helvetica","normal"); doc.setFontSize(10);
-  if (missingItems.length === 0){
-    doc.text("None.", margin, y); y += lh10;
-  } else {
-    for (const it of missingItems){
-      y = ensureSpace(doc, y, 20);
-      const st = state.items[it.id];
-      const line = `• ${it.name} (${st.received||0}/${it.qty})`;
-      const lines = splitLines(doc, line, maxW);
-      doc.text(lines, margin, y);
-      y += lines.length * lh10;
-    }
-  }
-  y += 10;
-
-  // Issues (with photos)
-  const issueItems = flat.filter(it => state.items[it.id].issue);
-  y = ensureSpace(doc, y, 30);
-  doc.setFont("helvetica","bold"); doc.setFontSize(12);
-  doc.text(`Issues (${issueItems.length})`, margin, y); y += 18;
-
-  doc.setFont("helvetica","normal"); doc.setFontSize(10);
-  if (issueItems.length === 0){
-    doc.text("None.", margin, y); y += lh10;
-  } else {
-    for (const it of issueItems){
-      const st = state.items[it.id];
-      y = ensureSpace(doc, y, 40);
-
-      const header = `• ${it.name} (${st.received||0}/${it.qty}) — ${st.issueType.toUpperCase()}`;
-      let lines = splitLines(doc, header, maxW);
-      doc.text(lines, margin, y);
-      y += lines.length * lh10;
-
-      const note = (st.note || "").trim();
-      if (note){
-        y = ensureSpace(doc, y, 30);
-        const nLines = splitLines(doc, `Note: ${note}`, maxW - 14);
-        doc.text(nLines, margin + 14, y);
-        y += nLines.length * lh10;
-      }
-
-      const photos = st.photos || [];
-      if (photos.length){
-        y = ensureSpace(doc, y, 24);
-        doc.setFont("helvetica","bold"); doc.setFontSize(10);
-        doc.text(`Photos (${photos.length}):`, margin + 14, y);
-        y += 12;
-        doc.setFont("helvetica","normal"); doc.setFontSize(10);
-
-        // thumbnails (2 per row)
-        const thumbW = 220;
-        const thumbH = 160;
-        const gap = 10;
-        let x = margin + 14;
-
-        for (let i=0; i<photos.length; i++){
-          y = ensureSpace(doc, y, thumbH + 20);
-          try{
-            doc.addImage(photos[i].dataUrl, "JPEG", x, y, thumbW, thumbH);
-          } catch {
-            doc.text("[Photo embed failed]", x, y + 12);
-          }
-          x += thumbW + gap;
-          if (x + thumbW > pageW - margin){
-            x = margin + 14;
-            y += thumbH + gap;
-          }
-        }
-        // if we ended mid-row, drop y to next line
-        if (x !== margin + 14) y += thumbH + gap;
-      }
-
-      y += 10;
-    }
+  if (results.length === 0){
+    qaResults.innerHTML = `<div class="smallText">No matches. Try fewer words (e.g. “900x618” or “plinth”).</div>`;
+    return;
   }
 
-  // Category Breakdown
-  y = ensureSpace(doc, y, 40);
-  doc.setFont("helvetica","bold"); doc.setFontSize(12);
-  doc.text("Category Breakdown", margin, y); y += 18;
-  doc.setFont("helvetica","normal"); doc.setFontSize(10);
+  qaResults.innerHTML = results.map(r => {
+    const st = state.items[r.id];
+    const got = st.received || 0;
+    const ok = got >= r.qty;
+    const badge = ok ? `<span class="pillTiny"><span class="dot ok"></span>Verified</span>`
+                     : `<span class="pillTiny"><span class="dot bad"></span>${got}/${r.qty}</span>`;
+    const issue = st.issue ? ` • ISSUE:${st.issueType.toUpperCase()}` : "";
+    return `
+      <div class="result">
+        <div>
+          <b>${r.name}</b>
+          <div class="mini">${r.catTitle} • Expected ${r.qty}${issue}</div>
+        </div>
+        <div class="btnRow" style="justify-content:flex-end">
+          ${badge}
+          <button class="small primary" data-qaadd="${r.id}" data-qacat="${r.catId}">+1 Add</button>
+        </div>
+      </div>
+    `;
+  }).join("");
 
-  for (const cat of CATEGORIES){
-    y = ensureSpace(doc, y, 20);
-    const v = cat.items.filter(isVerified).length;
-    const t = cat.items.length;
-    const l = splitLines(doc, `• ${cat.title}: ${v}/${t} verified`, maxW);
-    doc.text(l, margin, y);
-    y += l.length * lh10;
-  }
-
-  doc.save(`kitchen-delivery-${state.meta.jobDate || "date"}.pdf`);
+  qaResults.querySelectorAll("[data-qaadd]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const itemId = btn.getAttribute("data-qaadd");
+      const catId  = btn.getAttribute("data-qacat");
+      quickAddOne(itemId, catId);
+    });
+  });
 }
 
-$("btnPdf").addEventListener("click", generatePdf);
+function quickAddOne(itemId, catId){
+  // open category
+  state.ui.openSections[catId] = true;
 
-$("btnPrint").addEventListener("click", () => window.print());
-$("btnReset").addEventListener("click", () => {
-  if (!confirm("Reset this checklist on this device?")) return;
-  state = buildDefaultState();
+  // add +1 (clamped to expected)
+  const it = allItemsFlat().find(x => x.id === itemId);
+  if (!it) return;
+  const st = state.items[itemId];
+  st.received = clamp((st.received || 0) + 1, 0, it.qty);
+
+  // auto-clear missing issue when fully verified
+  if (st.received >= it.qty && st.issue && st.issueType === "missing") st.issue = false;
+
+  pendingScrollTo = itemId;
   saveState();
   render();
-});
 
-/* init */
-applyHeaderState();
-render();
-</script>
-</body>
-</html><!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kitchen Delivery Verification</title>
-
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-
-<style>
-  :root{
-    --bg:#0f141c;--card:#161c26;--text:#e8eefc;--muted:#94a3c7;
-    --border:rgba(255,255,255,.10);--ok:#35d07f;--bad:#ff5c73;--warn:#ffcc66;
-    --btn:#1f2733; --accent:#4aa3ff;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text);}
-
-  header{
-    position:sticky; top:0; z-index:10;
-    background:rgba(15,20,28,.92);
-    backdrop-filter:blur(10px);
-    border-bottom:1px solid var(--border);
-  }
-  .wrap{max-width:1100px;margin:0 auto;padding:12px;}
-  .card{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
-    border:1px solid var(--border);border-radius:16px;padding:12px;}
-  h1{margin:0;font-size:16px;line-height:1.2}
-  .sub{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.45}
-
-  .topRow{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap}
-  .btnRow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  button{
-    background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--text);
-    border-radius:12px;padding:9px 10px;cursor:pointer;font-weight:900;
-  }
-  button.primary{background:rgba(74,163,255,.18);border-color:rgba(74,163,255,.35)}
-  button.danger{background:rgba(255,92,115,.12);border-color:rgba(255,92,115,.35)}
-  button.small{padding:7px 10px;border-radius:999px;font-size:12px}
-
-  .pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-  .pill{
-    display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;
-    border:1px solid var(--border);background:rgba(0,0,0,.20);
-    color:var(--muted);font-size:12px;font-weight:800;
-  }
-  .dot{width:8px;height:8px;border-radius:999px;background:var(--warn)}
-  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
-
-  .grid2{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
-  @media(min-width:900px){.grid2{grid-template-columns:1.2fr .8fr}}
-  label{display:block;color:var(--muted);font-size:12px;margin:8px 0 6px;font-weight:800}
-  input[type="text"], input[type="date"]{
-    width:100%;border-radius:12px;border:1px solid var(--border);
-    background:rgba(0,0,0,.25);color:var(--text);padding:10px 12px;outline:none;
-  }
-  .toggle{
-    display:inline-flex;align-items:center;gap:10px;border:1px solid var(--border);
-    background:rgba(0,0,0,.20);border-radius:999px;padding:8px 10px;color:var(--muted);
-    font-size:12px;font-weight:900;
-  }
-  .toggle input{transform:scale(1.15)}
-
-  .progress{height:10px;border-radius:999px;border:1px solid var(--border);
-    background:rgba(0,0,0,.25);overflow:hidden;margin-top:10px}
-  .progress > div{height:100%;width:0%;
-    background:linear-gradient(90deg,rgba(74,163,255,.9),rgba(53,208,127,.9));
-    transition:width 250ms ease;
-  }
-  .smallText{font-size:12px;color:var(--muted);line-height:1.45}
-
-  /* Compact header mode */
-  header.compact .sub,
-  header.compact .formArea,
-  header.compact .progress,
-  header.compact #progressText,
-  header.compact #missingOnlyWrap{
-    display:none !important;
-  }
-  header.compact .card{padding:10px;}
-  header.compact h1{font-size:14px;}
-  header.compact .pills{margin-top:6px}
-  header.compact .pill{padding:6px 9px; font-size:12px}
-
-  main{max-width:1100px;margin:0 auto;padding:12px;display:grid;grid-template-columns:1fr;gap:12px}
-  @media(min-width:900px){main{grid-template-columns:1.45fr .55fr}}
-
-  details{
-    border:1px solid var(--border);background:rgba(0,0,0,.18);border-radius:16px;margin-bottom:10px;overflow:hidden;
-  }
-  summary{
-    cursor:pointer;list-style:none;padding:12px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;
-    font-weight:950;
-  }
-  summary::-webkit-details-marker{display:none}
-  .secMeta{color:var(--muted);font-weight:800;font-size:12px;display:flex;gap:10px;align-items:center}
-  .items{padding:10px 12px 12px}
-  .item{
-    border:1px solid var(--border);background:rgba(0,0,0,.18);border-radius:12px;padding:10px;margin-bottom:8px;
-  }
-  .itemTop{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
-  .name{font-weight:950}
-  .status.ok{color:var(--ok);font-weight:950}
-  .status.bad{color:var(--bad);font-weight:950}
-  .counter{display:flex;align-items:center;gap:8px}
-  .counter button{padding:6px 10px;border-radius:10px;background:var(--btn)}
-  .counter span{min-width:34px;text-align:center;font-weight:950;font-size:14px}
-  textarea, select{
-    width:100%;border-radius:12px;border:1px solid var(--border);
-    background:rgba(0,0,0,.25);color:var(--text);padding:10px 12px;outline:none;margin-top:8px;
-  }
-  textarea{min-height:64px;resize:vertical}
-  .panel{display:none;margin-top:8px}
-  .panel.show{display:block}
-  .thumbs{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-  .thumb{width:86px;height:86px;border-radius:12px;object-fit:cover;border:1px solid var(--border)}
-  .hint{color:var(--muted);font-size:12px;margin-top:6px}
-
-  .sideCard{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
-    border:1px solid var(--border);border-radius:16px;padding:14px}
-  .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
-</style>
-</head>
-
-<body>
-
-<header id="hdr">
-  <div class="wrap">
-    <div class="card">
-      <div class="topRow">
-        <div>
-          <h1>Kitchen Delivery Verification</h1>
-          <div class="sub">iPhone-friendly header • PDF report with readable spacing</div>
-          <div class="pills" id="pills"></div>
-        </div>
-        <div class="btnRow">
-          <button class="small" id="btnCollapse">Minimise</button>
-          <button class="primary" id="btnPdf">Generate PDF</button>
-          <button class="primary" id="btnExportTxt">Export TXT</button>
-          <button id="btnPrint">Print</button>
-          <button class="danger" id="btnReset">Reset</button>
-        </div>
-      </div>
-
-      <div class="formArea" id="formArea">
-        <div class="grid2">
-          <div>
-            <label>Job / Address</label>
-            <input id="jobAddress" type="text" placeholder="e.g., 21 High Street…" />
-          </div>
-          <div>
-            <label>Date</label>
-            <input id="jobDate" type="date" />
-          </div>
-        </div>
-
-        <div class="grid2">
-          <div>
-            <label>Installer / Team</label>
-            <input id="jobTeam" type="text" placeholder="e.g., Austin + Apprentice" />
-          </div>
-          <div>
-            <label>Search items</label>
-            <input id="search" type="text" placeholder="Filter… (e.g., plinth, 900×618)" />
-          </div>
-        </div>
-
-        <div class="btnRow" id="missingOnlyWrap">
-          <label class="toggle">
-            <input id="missingOnly" type="checkbox">
-            Show missing/issues only
-          </label>
-        </div>
-
-        <div class="progress">
-          <div id="bar"></div>
-        </div>
-        <div class="smallText" style="margin-top:8px">
-          <span id="progressText">0 / 0 verified</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</header>
-
-<main>
-  <div id="sections"></div>
-
-  <div class="sideCard">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <div style="font-weight:950">Readiness</div>
-      <div id="readyBadge" class="pill"></div>
-    </div>
-    <div id="readyHelp" class="smallText" style="margin-top:8px"></div>
-
-    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
-      <div style="font-weight:950">Issues Summary</div>
-      <div id="issues" class="smallText" style="margin-top:8px">No issues yet.</div>
-    </div>
-
-    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px" class="smallText">
-      Tip: Tap <b>Minimise</b> after you’ve entered job details.
-    </div>
-  </div>
-</main>
-
-<script>
-/* =========================
-   DATA (Austin/Wren pack)
-   ========================= */
-const CATEGORIES = [
-  { id:"inframe", title:"Inframe Profiles", items:[
-    { id:"inframe_3000_profile", name:"3000×70×30 Inframe Profile Worktop / Moulded Plinth Support", qty:1 },
-    { id:"inframe_446", name:"446×30×22 Inframe Appliance Profile — Seashell Ermine Matt", qty:1 },
-    { id:"inframe_596", name:"596×30×22 Inframe Appliance Profile — Seashell Ermine Matt", qty:1 },
-  ]},
-  { id:"cornice_plinth", title:"Cornice, Plinth & Pelmet", items:[
-    { id:"cornice_60x3000", name:"60×3000×38 Modern Cornice/Pelmet — Buckingham Green Matt", qty:1 },
-    { id:"stacked_cornice_frame", name:"394×2750×18 Modern Stacked Cornice Frame & Fittings", qty:2 },
-    { id:"plinth_buck_green", name:"150×3000×18 Moulded Plinth Pack — Buckingham Green Matt", qty:2 },
-    { id:"plinth_seashell", name:"150×3000×18 Moulded Plinth Pack — Seashell Matt", qty:3 },
-  ]},
-  { id:"sinks_plumbing", title:"Sinks & Plumbing", items:[
-    { id:"mcalpine_ssk2", name:"McAlpine Space Saver Plumbing Kit 1.5 Bowl (SSK2)", qty:1 },
-    { id:"waste_ring", name:"Waste Kit Converter Ring (BFK018)", qty:1 },
-  ]},
-  { id:"lighting", title:"Lighting", items:[
-    { id:"led_driver", name:"LED Driver inc Micro Connector", qty:1 },
-    { id:"led_round_black", name:"LED Round Black Warm White Light (2.2w)", qty:1 },
-  ]},
-  { id:"appliances", title:"Appliances", items:[
-    { id:"beko_dis15020", name:"Beko Fully Integrated Slimline Dishwasher (DIS15020)", qty:1 },
-  ]},
-  { id:"accessories", title:"Accessories", items:[
-    { id:"adhesive_mitre_pen", name:"50g Adhesive & Mitre Pen", qty:1 },
-    { id:"plinth_securing_set", name:"Fitting Pack — Plinth Securing Set (Appliances Only)", qty:3 },
-    { id:"worktop_batten", name:"Worktop Support Batten", qty:2 },
-    { id:"panel_edging_kit", name:"Panel Edging Kit", qty:1 },
-    { id:"install_kit_buck", name:"Installation Kit — Buckingham Green Ermine", qty:1 },
-    { id:"appliance_door_716x446", name:"716×446×22 Appliance Door Pack — Seashell", qty:1 },
-    { id:"appliance_door_716x596", name:"716×596×22 Appliance Door Pack — Seashell", qty:1 },
-    { id:"install_kit_seashell", name:"Installation Kit — Seashell Ermine", qty:1 },
-  ]},
-  { id:"base_units", title:"Base Units — Seashell Matt", items:[
-    { id:"base_corner_800_lh", name:"800mm Corner Base (LH) — 400 Door inc 1 Shelf Adj", qty:1 },
-    { id:"base_pullout_200_a", name:"200mm 1 Door Pull Out Base", qty:1 },
-    { id:"base_pullout_200_b", name:"200mm 1 Door Pull Out Base (second)", qty:1 },
-    { id:"base_belfast_800", name:"800mm Double Belfast Sink Base inc Liner", qty:1 },
-    { id:"base_bin_400", name:"400mm Base — 1 Door + Internal Drawer + 2 Bin inc Liner", qty:1 },
-    { id:"base_hob_800", name:"800mm 3 Drawer Venting Hob Base (non-open drawer)", qty:1 },
-  ]},
-  { id:"tower_units", title:"Tower Units — Buckingham Green Matt", items:[
-    { id:"tower_pantry_500_6shelves", name:"500mm Pantry Tower 70–30 (6 shelves)", qty:1 },
-    { id:"tower_500_drawers", name:"500mm Tower 70–30 (4 internal drawer + 1 shelf)", qty:1 },
-    { id:"tower_400_drawers", name:"400mm Tower 70–30 (4 internal drawer + 1 shelf)", qty:1 },
-    { id:"tower_appliance_600", name:"600mm Appliance Tower (1 door + 3 drawer)", qty:1 },
-  ]},
-  { id:"cooks_pantry", title:"Cooks Pantry Tower", items:[
-    { id:"cooks_pantry_1000", name:"1000mm 4 Door 70–30 Cooks Pantry Tower", qty:1 },
-  ]},
-  { id:"feature_units", title:"Tower Feature Units — Oak Matt", items:[
-    { id:"feature_drawer_963", name:"963mm Cooks Pantry Drawer Unit", qty:1 },
-    { id:"feature_spice_375", name:"375mm Cooks Pantry Shelving + Spice Rack (flatpack)", qty:1 },
-  ]},
-  { id:"wall_units", title:"Wall Units — Buckingham Green Matt", items:[
-    { id:"wall_reeded_600", name:"600mm Reeded Glass Door Wall Unit inc 2 glass shelves", qty:1 },
-  ]},
-  { id:"decor", title:"Décor Accessories", items:[
-    { id:"dend_394x2600", name:"394×2600×18 D/End — Buckingham Green", qty:2 },
-    { id:"dend_2300x600", name:"2300×600×18 D/End — Buckingham Green", qty:1 },
-    { id:"filler_1000x130_a", name:"1000×130×18 Filler — Buckingham Green", qty:1 },
-    { id:"filler_1000x130_b", name:"1000×130×18 Filler — Buckingham Green (second)", qty:1 },
-    { id:"filler_3000x130", name:"3000×130×18 Filler — Buckingham Green", qty:1 },
-    { id:"dend_900x1188", name:"900×1188×18 D/End — Seashell", qty:1 },
-    { id:"dend_900x618_a", name:"900×618×18 D/End — Seashell", qty:1 },
-    { id:"dend_900x618_b", name:"900×618×18 D/End — Seashell (second)", qty:1 },
-    { id:"dend_900x618_c", name:"900×618×18 D/End — Seashell (third)", qty:1 },
-    { id:"dend_900x618_d", name:"900×618×18 D/End — Seashell (fourth)", qty:1 },
-    { id:"void_adj_pack", name:"720×388×22 Void Adj CP Pack — Seashell", qty:1 },
-  ]},
-];
-
-/* =========================
-   STATE / STORAGE
-   ========================= */
-const STORAGE_KEY = "kitchen_delivery_austin_v6";
-const $ = (id) => document.getElementById(id);
-let headerLock = false; // NEW: lock header open while typing
-
-function buildDefaultState(){
-  const items = {};
-  for (const cat of CATEGORIES){
-    for (const it of cat.items){
-      items[it.id] = { received:0, note:"", issue:false, issueType:"missing", photos:[] };
-    }
-  }
-  return {
-    meta:{ jobAddress:"", jobDate:new Date().toISOString().slice(0,10), jobTeam:"" },
-    ui:{ search:"", missingOnly:false, openSections:Object.fromEntries(CATEGORIES.map(c=>[c.id,true])), headerCollapsed:false },
-    items
-  };
-}
-function loadState(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
-}
-let state = loadState() ?? buildDefaultState();
-function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-
-function allItemsFlat(){
-  const flat=[];
-  for (const c of CATEGORIES) for (const it of c.items) flat.push({catId:c.id, catTitle:c.title, ...it});
-  return flat;
-}
-function clamp(n,min,max){ return Math.max(min, Math.min(max,n)); }
-function isVerified(it){ return (state.items[it.id].received||0) >= it.qty; }
-function isAttention(it){ const st=state.items[it.id]; return !isVerified(it) || st.issue; }
-
-/* =========================
-   HEADER COLLAPSE (fixed)
-   ========================= */
-const hdr = document.getElementById("hdr");
-const formArea = document.getElementById("formArea");
-
-function applyHeaderState(){
-  const collapsed = !!state.ui.headerCollapsed;
-  hdr.classList.toggle("compact", collapsed);
-  $("btnCollapse").textContent = collapsed ? "Expand" : "Minimise";
-}
-
-$("btnCollapse").addEventListener("click", () => {
-  state.ui.headerCollapsed = !state.ui.headerCollapsed;
-  saveState();
-  applyHeaderState();
-});
-
-// NEW: lock header open while user is editing top fields
-formArea.addEventListener("focusin", () => {
-  headerLock = true;
-  state.ui.headerCollapsed = false;
-  saveState();
-  applyHeaderState();
-});
-formArea.addEventListener("focusout", () => {
-  // small delay so iOS keyboard closing doesn't instantly collapse mid-transition
-  setTimeout(() => { headerLock = false; }, 200);
-});
-
-// Auto-collapse on scroll ONLY when not locked
-let lastAuto = 0;
-window.addEventListener("scroll", () => {
-  if (headerLock) return;
-  const y = window.scrollY || 0;
-  const now = Date.now();
-  if (now - lastAuto < 250) return;
-
-  if (y > 80 && !state.ui.headerCollapsed){
-    state.ui.headerCollapsed = true; saveState(); applyHeaderState(); lastAuto = now;
-  }
-  if (y < 10 && state.ui.headerCollapsed){
-    state.ui.headerCollapsed = false; saveState(); applyHeaderState(); lastAuto = now;
-  }
-});
-
-/* =========================
-   IMAGE COMPRESSION
-   ========================= */
-function fileToCompressedDataURL(file, maxDim=1200, quality=0.75){
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
-        const c = document.createElement("canvas");
-        c.width=w; c.height=h;
-        const ctx=c.getContext("2d");
-        ctx.drawImage(img,0,0,w,h);
-        resolve(c.toDataURL("image/jpeg", quality));
-      };
-      img.onerror = reject;
-      img.src = reader.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+  closeQuickAdd();
+  showToast(`✅ Added +1: ${it.name}`);
 }
 
 /* =========================
@@ -1308,6 +662,8 @@ function render(){
 
       const itemEl = document.createElement("div");
       itemEl.className = "item";
+      itemEl.setAttribute("data-item-id", it.id);
+
       itemEl.innerHTML = `
         <div class="itemTop">
           <div>
@@ -1434,6 +790,21 @@ function render(){
   updateTopSummary();
   updateSidePanels();
   saveState();
+
+  // After render, scroll to pending item (from Quick Add)
+  if (pendingScrollTo){
+    const id = pendingScrollTo;
+    pendingScrollTo = null;
+    setTimeout(() => {
+      const el = document.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
+      if (el){
+        el.scrollIntoView({behavior:"smooth", block:"center"});
+        el.style.outline = "2px solid rgba(74,163,255,.65)";
+        el.style.outlineOffset = "3px";
+        setTimeout(()=> { el.style.outline=""; el.style.outlineOffset=""; }, 1200);
+      }
+    }, 120);
+  }
 }
 
 function updateTopSummary(){
@@ -1544,17 +915,12 @@ $("btnExportTxt").addEventListener("click", () => {
 });
 
 /* =========================
-   PDF EXPORT (fixed spacing)
+   PDF EXPORT (photos included)
    ========================= */
-function splitLines(doc, text, width){
-  return doc.splitTextToSize(text, width);
-}
+function splitLines(doc, text, width){ return doc.splitTextToSize(text, width); }
 function ensureSpace(doc, y, need){
   const pageH = doc.internal.pageSize.getHeight();
-  if (y + need > pageH - 40){
-    doc.addPage();
-    return 40;
-  }
+  if (y + need > pageH - 40){ doc.addPage(); return 40; }
   return y;
 }
 
@@ -1569,8 +935,7 @@ async function generatePdf(){
   const margin = 40;
   const pageW = doc.internal.pageSize.getWidth();
   const maxW = pageW - margin*2;
-  const lh10 = 14;  // NEW: bigger line height for readability
-  const lh12 = 16;
+  const lh10 = 14;
 
   const flat = allItemsFlat();
   const total = flat.length;
@@ -1580,25 +945,21 @@ async function generatePdf(){
 
   let y = margin;
 
-  doc.setFont("helvetica","bold");
-  doc.setFontSize(16);
+  doc.setFont("helvetica","bold"); doc.setFontSize(16);
   doc.text("Kitchen Delivery Verification Report", margin, y);
   y += 22;
 
-  doc.setFont("helvetica","normal");
-  doc.setFontSize(10);
+  doc.setFont("helvetica","normal"); doc.setFontSize(10);
   doc.text(`Job/Address: ${state.meta.jobAddress || "-"}`, margin, y); y += lh10;
   doc.text(`Date: ${state.meta.jobDate || "-"}`, margin, y); y += lh10;
   doc.text(`Team: ${state.meta.jobTeam || "-"}`, margin, y); y += 18;
 
-  // Summary
   doc.setFont("helvetica","bold"); doc.setFontSize(12);
   doc.text("Summary", margin, y); y += 18;
   doc.setFont("helvetica","normal"); doc.setFontSize(10);
   doc.text(`Verified: ${verified}/${total}    Missing: ${missing}    Issues: ${issues}`, margin, y);
   y += 22;
 
-  // Missing Items
   const missingItems = flat.filter(it => !isVerified(it));
   y = ensureSpace(doc, y, 30);
   doc.setFont("helvetica","bold"); doc.setFontSize(12);
@@ -1619,7 +980,6 @@ async function generatePdf(){
   }
   y += 10;
 
-  // Issues (with photos)
   const issueItems = flat.filter(it => state.items[it.id].issue);
   y = ensureSpace(doc, y, 30);
   doc.setFont("helvetica","bold"); doc.setFontSize(12);
@@ -1654,10 +1014,7 @@ async function generatePdf(){
         y += 12;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
-        // thumbnails (2 per row)
-        const thumbW = 220;
-        const thumbH = 160;
-        const gap = 10;
+        const thumbW = 220, thumbH = 160, gap = 10;
         let x = margin + 14;
 
         for (let i=0; i<photos.length; i++){
@@ -1673,15 +1030,12 @@ async function generatePdf(){
             y += thumbH + gap;
           }
         }
-        // if we ended mid-row, drop y to next line
         if (x !== margin + 14) y += thumbH + gap;
       }
-
       y += 10;
     }
   }
 
-  // Category Breakdown
   y = ensureSpace(doc, y, 40);
   doc.setFont("helvetica","bold"); doc.setFontSize(12);
   doc.text("Category Breakdown", margin, y); y += 18;
@@ -1698,10 +1052,13 @@ async function generatePdf(){
 
   doc.save(`kitchen-delivery-${state.meta.jobDate || "date"}.pdf`);
 }
-
 $("btnPdf").addEventListener("click", generatePdf);
 
+/* =========================
+   PRINT + RESET
+   ========================= */
 $("btnPrint").addEventListener("click", () => window.print());
+
 $("btnReset").addEventListener("click", () => {
   if (!confirm("Reset this checklist on this device?")) return;
   state = buildDefaultState();
